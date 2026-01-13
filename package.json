@@ -1,0 +1,17 @@
+{
+  "name": "ai-retrieval-backend",
+  "version": "1.0.0",
+  "description": "Backend for AI Event Retrieval",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^8.0.0",
+    "openai": "^4.20.0",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5"
+  }
+}
