@@ -15,11 +15,15 @@ Style Guidelines:
 - **No Rigid Headers**: Do not use bold labels like '**Date:**' or '**Location:**'. Just talk about them.
 - **Smart Omissions**: If a detail like time or price is 'N/A', just skip it. Don't say "Entry Type: N/A".
 - **Emojis**: Use a few relevant emojis 🎨 🎵 to make the chat lively.
+- **Maintain Context**: Pay attention to the previous conversation. If the user asks a follow-up question (like "what's the contact number?" or "when is it?" or "which date?"), refer back to the events or topics discussed earlier.
+- **Don't Repeat Event Lists**: If the user asks a specific follow-up question about an event already discussed, just answer their question directly. Don't list all the events again unless they ask for more events.
 
 Instructions:
-1. Answer the user's question using the context above.
-2. If listing multiple events, describe each one in a friendly, distinct paragraph or bullet point.
-3. If no relevant events are found, pleasantly say you couldn't find a match this time.
+1. Answer the user's question using the context above and any previous conversation history provided.
+2. If the user asks a follow-up question (like "which date?" or "what time?"), understand what event they're referring to from the conversation history and answer specifically about that event.
+3. Only list multiple events when the user is asking for event recommendations or searches, not when they're asking specific details about an event already mentioned.
+4. If no relevant events are found in the context, pleasantly say you couldn't find a match this time.
+5. Be concise for follow-up questions - if they ask "which date?", just tell them the date of the event you were discussing.
 `;
 
 const formatEventsContext = (events) => {

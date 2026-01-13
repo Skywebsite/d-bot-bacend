@@ -90,6 +90,25 @@ const generateEmbedding = async (text) => {
 };
 
 /**
+ * Helper function to calculate event quality score
+ * Returns a score from 0-100 based on how complete the event data is
+ */
+const calculateEventQuality = (event) => {
+    const details = event.event_details || {};
+    let score = 0;
+
+    // Check each field and add points if it's not N/A or empty
+    if (details.event_name && details.event_name !== 'N/A' && details.event_name.trim().length > 0) score += 30;
+    if (details.event_date && details.event_date !== 'N/A' && details.event_date.trim().length > 0) score += 25;
+    if (details.location && details.location !== 'N/A' && details.location.trim().length > 0) score += 20;
+    if (details.event_time && details.event_time !== 'N/A' && details.event_time.trim().length > 0) score += 10;
+    if (details.organizer && details.organizer !== 'N/A' && details.organizer.trim().length > 0) score += 10;
+    if (details.website && details.website !== 'N/A' && details.website.trim().length > 0) score += 5;
+
+    return score;
+};
+
+/**
  * Perform Vector Search in MongoDB Atlas with Fallback
  */
 const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
@@ -107,7 +126,7 @@ const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
                             path: "embedding",
                             queryVector: queryEmbedding,
                             numCandidates: 100,
-                            limit: limit
+                            limit: limit * 2 // Get more candidates for filtering
                         }
                     },
                     {
@@ -128,7 +147,7 @@ const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
         // 2. Keyword Search (Regex) - Fallback for when Vector Search fails or is insufficient
         if (queryText) {
             // "Smart" Keyword Extraction: Remove stop words to find core terms
-            const stopWords = ['show', 'me', 'any', 'event', 'events', 'of', 'in', 'for', 'the', 'a', 'an', 'find', 'search', 'about', 'is', 'are'];
+            const stopWords = ['show', 'me', 'any', 'event', 'events', 'of', 'in', 'for', 'the', 'a', 'an', 'find', 'search', 'about', 'is', 'are', 'which', 'what', 'when', 'where'];
             const tokens = queryText.toLowerCase().split(/[\s,.?!]+/); // Split by space or punctuation
             const keywords = tokens.filter(t => t.length > 2 && !stopWords.includes(t));
 
@@ -138,7 +157,8 @@ const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
                     const regex = new RegExp(kw, 'i');
                     return [
                         { "event_details.event_name": regex },
-                        { "event_details.place": regex },
+                        { "event_details.location": regex },
+                        { "event_details.event_date": regex },
                         { "full_text": regex },
                         { "raw_ocr.text": regex } // Also check raw OCR words
                     ];
@@ -146,9 +166,9 @@ const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
 
                 keywordResults = await mongoose.connection.collection('events').find({
                     $or: keywordConditions
-                }).limit(limit).toArray();
+                }).limit(limit * 2).toArray(); // Get more candidates for filtering
 
-                console.log(`[Smart Search] Keywords: [${keywords.join(', ')}] -> Found ${keywordResults.length} matches.`);
+                console.log(`[Smart Search] Keywords: [${keywords.join(', ')}] -> Found ${keywordResults.length} raw matches.`);
             } else {
                 // Determine if we should fallback to the original whole-phrase search
                 // (Useful if the user searched for something very short or specific that was filtered out)
@@ -156,10 +176,11 @@ const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
                 keywordResults = await mongoose.connection.collection('events').find({
                     $or: [
                         { "event_details.event_name": searchRegex },
-                        { "event_details.place": searchRegex },
+                        { "event_details.location": searchRegex },
+                        { "event_details.event_date": searchRegex },
                         { "full_text": searchRegex }
                     ]
-                }).limit(limit).toArray();
+                }).limit(limit * 2).toArray();
             }
         }
 
@@ -176,19 +197,96 @@ const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
             }
         }
 
-        // Limit final set
-        return uniqueResults.slice(0, limit);
+        // 4. Filter by quality - only keep events with quality score >= 50
+        const qualityFiltered = uniqueResults.filter(event => {
+            const quality = calculateEventQuality(event);
+            return quality >= 50; // Must have at least name + date or name + location
+        });
+
+        console.log(`[Quality Filter] ${uniqueResults.length} unique results -> ${qualityFiltered.length} quality events`);
+
+        // 5. Sort by quality score (higher is better)
+        qualityFiltered.sort((a, b) => calculateEventQuality(b) - calculateEventQuality(a));
+
+        // 6. Limit final set
+        const finalResults = qualityFiltered.slice(0, limit);
+
+        // If we have no quality results, return empty array instead of low-quality events
+        return finalResults.length > 0 ? finalResults : [];
 
     } catch (error) {
-        console.warn("[Search Warning] Retrieval failed. Falling back to simple latest events:", error.message);
-        return await mongoose.connection.collection('events').find({}).limit(limit).toArray();
+        console.warn("[Search Warning] Retrieval failed:", error.message);
+        return [];
     }
+};
+
+/**
+ * Helper function to detect if a question is a follow-up question
+ */
+const isFollowUpQuestion = (question, conversationHistory = []) => {
+    const q = question.toLowerCase().trim();
+
+    // If the question is very short (1-3 words) and there's conversation history, likely a follow-up
+    const wordCount = q.split(/\s+/).length;
+    if (wordCount <= 3 && conversationHistory.length > 0) {
+        // Check if it contains question-like words or detail-seeking words
+        const detailWords = ['date', 'time', 'location', 'place', 'contact', 'number', 'phone', 'email',
+            'website', 'address', 'price', 'cost', 'when', 'where', 'who', 'what',
+            'which', 'how', 'their', 'they', 'its', 'the'];
+        const hasDetailWord = detailWords.some(word => q.includes(word));
+        if (hasDetailWord) {
+            console.log(`[Follow-up Detection] Short question with detail word: "${question}"`);
+            return true;
+        }
+    }
+
+    // Common follow-up patterns
+    const followUpPatterns = [
+        // Standard question patterns
+        /^(which|what|when|where|who|whose)\s+(date|time|location|place|contact|number|price|cost|website|email|phone)/i,
+
+        // "the X" patterns
+        /^(the\s+)?(date|time|location|place|contact|number|price|cost|website|email|phone|address)/i,
+
+        // Possessive patterns (their, its, his, her)
+        /^(their|its|his|her|they)\s+/i,
+
+        // Direct detail words at start
+        /^(contact|phone|email|website|address|price|cost|date|time|location|place)/i,
+
+        // How questions
+        /^(how much|how long|how many|how far)/i,
+
+        // "X number" or "X details" patterns
+        /(contact|phone)\s*(number|details|info)?$/i,
+
+        // Very short contextual questions
+        /^(when|where|who|what time|what date)/i
+    ];
+
+    const isFollowUp = followUpPatterns.some(pattern => pattern.test(q));
+
+    if (isFollowUp) {
+        console.log(`[Follow-up Detection] Pattern matched: "${question}"`);
+    }
+
+    return isFollowUp;
+};
+
+/**
+ * Extract event sources from conversation history
+ */
+const extractEventsFromHistory = (conversationHistory) => {
+    // Look for the last AI message that might have included event sources
+    // In a real implementation, we'd need to store sources with messages
+    // For now, we'll return empty array and rely on the AI's memory
+    return [];
 };
 
 /**
  * Main chat logic: RAG approach using Eden AI
  */
-const getChatResponse = async (question) => {
+const getChatResponse = async (question, conversationHistory = []) => {
     try {
         // -------------------------------------------------
         // 1. Check Local Intents First (Dialogflow-like)
@@ -200,19 +298,44 @@ const getChatResponse = async (question) => {
         }
 
         // -------------------------------------------------
-        // 2. Fallback to RAG (Embeddings + LLM)
+        // 2. Check if this is a follow-up question
         // -------------------------------------------------
+        const isFollowUp = isFollowUpQuestion(question, conversationHistory);
+        let relevantEvents = [];
 
-        // Generate Query Vector (Optional fallback)
-        const queryEmbedding = await generateEmbedding(question);
+        if (isFollowUp && conversationHistory.length > 0) {
+            console.log("[AI Service] Detected follow-up question. Using conversation context only.");
+            // For follow-up questions, don't search for new events
+            // The AI will use the conversation history to answer
+            relevantEvents = [];
+        } else {
+            // -------------------------------------------------
+            // 3. Perform RAG (Embeddings + LLM) for new queries
+            // -------------------------------------------------
 
-        // 2. Search Database (with fallback to basic retrieval)
-        const relevantEvents = await retrieveRelevantEvents(queryEmbedding, question);
+            // Generate Query Vector (Optional fallback)
+            const queryEmbedding = await generateEmbedding(question);
 
-        // 3. Prepare Context
+            // Search Database (with fallback to basic retrieval)
+            relevantEvents = await retrieveRelevantEvents(queryEmbedding, question);
+        }
+
+        // 4. Prepare Context
         const eventsContext = formatEventsContext(relevantEvents);
 
-        // 4. Generate Answer using Eden AI Chat
+        // 5. Build conversation context from history
+        let conversationContext = '';
+        if (conversationHistory && conversationHistory.length > 0) {
+            // Take last 6 messages (3 turns) to keep context manageable
+            const recentHistory = conversationHistory.slice(-6);
+            conversationContext = '\n\nPrevious Conversation:\n' +
+                recentHistory.map(msg => {
+                    const role = msg.role === 'user' ? 'User' : 'D-Bot';
+                    return `${role}: ${msg.content}`;
+                }).join('\n');
+        }
+
+        // 6. Generate Answer using Eden AI Chat
         try {
             const response = await fetch(`${CONFIG.baseUrl}/text/chat`, {
                 method: 'POST',
@@ -223,7 +346,7 @@ const getChatResponse = async (question) => {
                 body: JSON.stringify({
                     providers: CONFIG.chatProvider,
                     text: question,
-                    chatbot_global_action: SYSTEM_PROMPT.replace('{eventsContext}', eventsContext),
+                    chatbot_global_action: SYSTEM_PROMPT.replace('{eventsContext}', eventsContext) + conversationContext,
                     temperature: 0.2,
                     max_tokens: 1000,
                     [CONFIG.chatProvider]: CONFIG.llmModel
@@ -243,7 +366,7 @@ const getChatResponse = async (question) => {
             if (providerData && providerData.status === 'success') {
                 return {
                     answer: providerData.generated_text,
-                    sources: relevantEvents
+                    sources: isFollowUp ? [] : relevantEvents // Don't show event cards for follow-up questions
                 };
             }
         } catch (chatError) {
