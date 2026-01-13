@@ -92,43 +92,69 @@ const generateEmbedding = async (text) => {
 /**
  * Perform Vector Search in MongoDB Atlas with Fallback
  */
-const retrieveRelevantEvents = async (queryEmbedding, limit = 5) => {
+const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
     try {
-        if (!queryEmbedding) {
-            console.warn("[Search Warning] No query embedding provided, falling back to simple retrieval.");
-            return await mongoose.connection.collection('events').find({}).limit(limit).toArray();
-        }
+        let vectorResults = [];
+        let keywordResults = [];
 
-        const results = await mongoose.connection.collection('events').aggregate([
-            {
-                $vectorSearch: {
-                    index: "vector_index",
-                    path: "embedding",
-                    queryVector: queryEmbedding,
-                    numCandidates: 100,
-                    limit: limit
-                }
-            },
-            {
-                $project: {
-                    _id: 1,
-                    event_details: 1,
-                    full_text: 1,
-                    raw_ocr: 1,
-                    score: { $meta: "vectorSearchScore" }
-                }
+        // 1. Vector Search (if embedding exists)
+        if (queryEmbedding) {
+            try {
+                vectorResults = await mongoose.connection.collection('events').aggregate([
+                    {
+                        $vectorSearch: {
+                            index: "vector_index",
+                            path: "embedding",
+                            queryVector: queryEmbedding,
+                            numCandidates: 100,
+                            limit: limit
+                        }
+                    },
+                    {
+                        $project: {
+                            _id: 1,
+                            event_details: 1,
+                            full_text: 1,
+                            raw_ocr: 1,
+                            score: { $meta: "vectorSearchScore" }
+                        }
+                    }
+                ]).toArray();
+            } catch (err) {
+                console.warn("[Search Warning] Vector search failed (likely missing index). Ignoring vector results.", err.message);
             }
-        ]).toArray();
-
-        if (results.length === 0) {
-            console.warn("[Search Info] Vector search returned no matches. Falling back to standard latest events.");
-            return await mongoose.connection.collection('events').find({}).sort({ "event_details.event_date": 1 }).limit(limit).toArray();
         }
 
-        return results;
+        // 2. Keyword Search (Regex) - Critical for records without embeddings
+        if (queryText) {
+            const searchRegex = new RegExp(queryText, 'i');
+            keywordResults = await mongoose.connection.collection('events').find({
+                $or: [
+                    { "event_details.event_name": searchRegex }, // Corrected field name
+                    { "event_details.place": searchRegex },
+                    { "full_text": searchRegex } // Search full extracted text
+                ]
+            }).limit(limit).toArray();
+        }
+
+        // 3. Merge and Deduplicate
+        const allResults = [...vectorResults, ...keywordResults];
+        const uniqueResults = [];
+        const seenIds = new Set();
+
+        for (const result of allResults) {
+            const idStr = result._id.toString();
+            if (!seenIds.has(idStr)) {
+                seenIds.add(idStr);
+                uniqueResults.push(result);
+            }
+        }
+
+        // Limit final set
+        return uniqueResults.slice(0, limit);
+
     } catch (error) {
-        console.warn("[Search Warning] Vector search failed (missing index or field). Falling back to basic search:", error.message);
-        // Fallback: Just return some events so the AI has context to work with
+        console.warn("[Search Warning] Retrieval failed. Falling back to simple latest events:", error.message);
         return await mongoose.connection.collection('events').find({}).limit(limit).toArray();
     }
 };
@@ -155,7 +181,7 @@ const getChatResponse = async (question) => {
         const queryEmbedding = await generateEmbedding(question);
 
         // 2. Search Database (with fallback to basic retrieval)
-        const relevantEvents = await retrieveRelevantEvents(queryEmbedding);
+        const relevantEvents = await retrieveRelevantEvents(queryEmbedding, question);
 
         // 3. Prepare Context
         const eventsContext = formatEventsContext(relevantEvents);
@@ -224,9 +250,9 @@ const performStandardSearch = async (query) => {
 
         const results = await mongoose.connection.collection('events').find({
             $or: [
-                { "event_details.name": searchRegex },
+                { "event_details.event_name": searchRegex },
                 { "event_details.place": searchRegex },
-                { "raw_ocr": searchRegex } // Search raw text as well
+                { "full_text": searchRegex } // Search full text instead of raw_ocr array
             ]
         }).limit(10).toArray();
 
