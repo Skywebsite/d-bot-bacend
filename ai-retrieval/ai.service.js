@@ -30,7 +30,7 @@ const detectIntent = async (question) => {
     }
 
     // 2. LIST ALL EVENTS INTENT
-    if (q.includes('all events') || q.includes('show events') || q.match(/^events$/)) {
+    if (q.includes('all events') || q.includes('show events') || q.includes('any events') || q.includes('latest events') || q.match(/^events$/)) {
         const events = await mongoose.connection.collection('events').find({}).limit(10).toArray();
         return {
             answer: "Here are the latest events I found for you! 📅",
@@ -125,16 +125,42 @@ const retrieveRelevantEvents = async (queryEmbedding, queryText, limit = 5) => {
             }
         }
 
-        // 2. Keyword Search (Regex) - Critical for records without embeddings
+        // 2. Keyword Search (Regex) - Fallback for when Vector Search fails or is insufficient
         if (queryText) {
-            const searchRegex = new RegExp(queryText, 'i');
-            keywordResults = await mongoose.connection.collection('events').find({
-                $or: [
-                    { "event_details.event_name": searchRegex }, // Corrected field name
-                    { "event_details.place": searchRegex },
-                    { "full_text": searchRegex } // Search full extracted text
-                ]
-            }).limit(limit).toArray();
+            // "Smart" Keyword Extraction: Remove stop words to find core terms
+            const stopWords = ['show', 'me', 'any', 'event', 'events', 'of', 'in', 'for', 'the', 'a', 'an', 'find', 'search', 'about', 'is', 'are'];
+            const tokens = queryText.toLowerCase().split(/[\s,.?!]+/); // Split by space or punctuation
+            const keywords = tokens.filter(t => t.length > 2 && !stopWords.includes(t));
+
+            // If we extracted valid keywords, search for ANY of them (broad match)
+            if (keywords.length > 0) {
+                const keywordConditions = keywords.map(kw => {
+                    const regex = new RegExp(kw, 'i');
+                    return [
+                        { "event_details.event_name": regex },
+                        { "event_details.place": regex },
+                        { "full_text": regex },
+                        { "raw_ocr.text": regex } // Also check raw OCR words
+                    ];
+                }).flat();
+
+                keywordResults = await mongoose.connection.collection('events').find({
+                    $or: keywordConditions
+                }).limit(limit).toArray();
+
+                console.log(`[Smart Search] Keywords: [${keywords.join(', ')}] -> Found ${keywordResults.length} matches.`);
+            } else {
+                // Determine if we should fallback to the original whole-phrase search
+                // (Useful if the user searched for something very short or specific that was filtered out)
+                const searchRegex = new RegExp(queryText, 'i');
+                keywordResults = await mongoose.connection.collection('events').find({
+                    $or: [
+                        { "event_details.event_name": searchRegex },
+                        { "event_details.place": searchRegex },
+                        { "full_text": searchRegex }
+                    ]
+                }).limit(limit).toArray();
+            }
         }
 
         // 3. Merge and Deduplicate

@@ -8,11 +8,7 @@
 const responseFormatter = (answer, sources = []) => {
     return {
         answer,
-        sources: sources.map(s => ({
-            name: s.event_details?.event_name,
-            date: s.event_details?.event_date,
-            location: s.event_details?.location
-        }))
+        sources // Return full source objects so frontend can access all details (event_details, time, etc.)
     };
 };
 
