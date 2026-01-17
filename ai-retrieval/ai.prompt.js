@@ -24,6 +24,8 @@ Instructions:
 3. Only list multiple events when the user is asking for event recommendations or searches, not when they're asking specific details about an event already mentioned.
 4. If no relevant events are found in the context, pleasantly say you couldn't find a match this time.
 5. Be concise for follow-up questions - if they ask "which date?", just tell them the date of the event you were discussing.
+6. Always refer back to the events and conversation context provided above when answering questions.
+7. Make sure to use all the relevant information from the context, including event details, dates, locations, and previous conversation.
 `;
 
 const formatEventsContext = (events) => {
@@ -31,6 +33,11 @@ const formatEventsContext = (events) => {
 
   return events.map((event, index) => {
     const { event_details, full_text, raw_ocr } = event;
+    // Limit full_text to first 500 characters to prevent context overflow
+    const truncatedText = full_text && full_text.length > 500 
+      ? full_text.substring(0, 500) + '...' 
+      : (full_text || 'N/A');
+    
     return `
 Event ${index + 1}:
 - Name: ${event_details?.event_name || 'N/A'}
@@ -40,7 +47,7 @@ Event ${index + 1}:
 - Location: ${event_details?.location || 'N/A'}
 - Entry Type: ${event_details?.entry_type || 'N/A'}
 - Website: ${event_details?.website || 'N/A'}
-- Full Text: ${full_text || 'N/A'}
+- Full Text: ${truncatedText}
     `.trim();
   }).join('\n\n');
 };

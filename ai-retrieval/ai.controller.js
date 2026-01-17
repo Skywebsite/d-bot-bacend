@@ -5,7 +5,7 @@ const { responseFormatter } = require('./ai.utils');
  * Handle AI Chat Route
  */
 const handleChat = async (req, res) => {
-    const { question, conversationHistory } = req.body;
+    const { question, conversationHistory, user } = req.body;
 
     // 1. Validate Input
     if (!question || typeof question !== 'string') {
@@ -13,8 +13,8 @@ const handleChat = async (req, res) => {
     }
 
     try {
-        // 2. Call Retrieval Logic with conversation history
-        const result = await aiService.getChatResponse(question, conversationHistory || []);
+        // 2. Call Retrieval Logic with conversation history and user info
+        const result = await aiService.getChatResponse(question, conversationHistory || [], user || null);
 
         // 3. Return Formatted Response
         const formattedResponse = responseFormatter(result.answer, result.sources);
